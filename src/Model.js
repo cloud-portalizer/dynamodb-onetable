@@ -1087,7 +1087,7 @@ export class Model {
                 /* eslint-disable-next-line */
                 ;[att, sub] = field.attribute
             }
-            let value = raw[att]
+            let value = Object.hasOwn(raw, att) ? raw[att] : undefined
             if (value === undefined) {
                 if (field.encode) {
                     let [att, sep, index] = field.encode
