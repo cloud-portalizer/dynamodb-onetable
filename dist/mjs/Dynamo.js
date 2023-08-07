@@ -3,13 +3,6 @@
 
     This module provides a wrapper and convenience API over the AWS V3 SDK.
     It is used by OneTable internally and is not a public API.
-
-    Use:
-        import {Model, Table} from 'dynamodb-onetable'
-        import Dynamo from 'dynamodb-onetable/Dynamo'
-
-        const dynamo = new Dynamo(params)
-        const table = new Table({ dynamo, ... })
 */
 import { BatchGetItemCommand, BatchWriteItemCommand, CreateTableCommand, DeleteItemCommand, DeleteTableCommand, DescribeTableCommand, GetItemCommand, ListTablesCommand, PutItemCommand, QueryCommand, ScanCommand, TransactGetItemsCommand, TransactWriteItemsCommand, UpdateItemCommand, UpdateTableCommand, } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';

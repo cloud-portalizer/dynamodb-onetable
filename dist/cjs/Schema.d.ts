@@ -2,7 +2,7 @@ export class Schema {
     constructor(table: any, schema: any);
     table: any;
     keyTypes: {};
-    sync: {};
+    process: {};
     params: any;
     getCurrentSchema(): any;
     setSchemaInner(schema: any): any;
@@ -47,7 +47,7 @@ export class Schema {
             type: string;
             required: boolean;
         };
-        sync: {
+        process: {
             type: string;
         };
         version: {
@@ -80,7 +80,9 @@ export class Schema {
     };
     addModel(name: any, fields: any): void;
     listModels(): string[];
-    getModel(name: any): any;
+    getModel(name: any, options?: {
+        nothrow: boolean;
+    }): any;
     removeModel(name: any): void;
     getKeys(refresh?: boolean): Promise<any>;
     setDefaultParams(params: any): any;

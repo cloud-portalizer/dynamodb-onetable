@@ -3,15 +3,16 @@
 
     A OneTable Table represents a single (connected) DynamoDB table
  */
+import { Buffer } from 'buffer';
 import Crypto from 'crypto';
 import UUID from './UUID.js';
 import ULID from './ULID.js';
 import UID from './UID.js';
+import Dynamo from './Dynamo.js';
 import { Expression } from './Expression.js';
 import { Schema } from './Schema.js';
 import { Metrics } from './Metrics.js';
 import { OneTableArgError, OneTableError } from './Error.js';
-import { Converter } from 'aws-sdk/clients/dynamodb';
 /*
     AWS V2 DocumentClient methods
  */
@@ -86,6 +87,10 @@ export class Table {
         }
     }
     setClient(client) {
+        if (client.send && !client.V3) {
+            //  V3 SDK and not yet wrapped by Dynamo
+            client = new Dynamo({ client });
+        }
         this.client = client;
         this.V3 = client.V3;
         this.service = this.V3 ? this.client : this.client.service;
@@ -484,8 +489,8 @@ export class Table {
     /*
         Thows exception if model cannot be found
      */
-    getModel(name) {
-        return this.schema.getModel(name);
+    getModel(name, options = { nothrow: false }) {
+        return this.schema.getModel(name, options);
     }
     removeModel(name) {
         return this.schema.removeModel(name);
@@ -604,9 +609,9 @@ export class Table {
                 result = result || {};
                 result.Error = 1;
                 if (params.log != false) {
-                    this.log.error(`OneTable exception in "${op}" on "${model}"`, { err, trace });
+                    this.log.error(`OneTable exception in "${op}" on "${model} ${err.message}"`, { err, trace });
                 }
-                throw new OneTableError(`OneTable execute failed "${op}" for "${model}. ${err.message}`, {
+                throw new OneTableError(`OneTable execute failed "${op}" for "${model}", ${err.message}`, {
                     code,
                     err,
                     trace,
@@ -696,16 +701,15 @@ export class Table {
         Those will be handled here if possible.
     */
     async batchWrite(batch, params = {}) {
-        if (Object.getOwnPropertyNames(batch).length == 0) {
+        if (Object.getOwnPropertyNames(batch).length === 0) {
             return {};
         }
         let retries = 0, more;
         do {
             more = false;
             let response = await this.execute(GenericModel, 'batchWrite', batch, {}, params);
-            let data = response.data;
-            if (data && data.UnprocessedItems && Object.keys(data.UnprocessedItems).length) {
-                batch.RequestItems = data.UnprocessedItems;
+            if (response && response.UnprocessedItems && Object.keys(response.UnprocessedItems).length) {
+                batch.RequestItems = response.UnprocessedItems;
                 if (params.reprocess === false) {
                     return false;
                 }
@@ -1032,31 +1036,27 @@ export class Table {
         }
         return item;
     }
+    unmarshallStreamImage(image, params) {
+        let client = params.client ? params.client : this.client;
+        let options = client.params.unmarshall;
+        return client.unmarshall(image, options);
+    }
     /*
         Handle DynamoDb Stream Records
      */
     stream(records, params = {}) {
-        const unmarshallStreamImage = (image, params) => {
-            if (this.V3) {
-                return this.unmarshall(image, params);
-            }
-            // Built in unmarshaller for SDK v2 isn't compatible with Stream Record Images
-            return Converter.unmarshall(image);
-        };
         const tableModels = this.listModels();
         const result = {};
         for (const record of records) {
             if (!record.dynamodb.NewImage && !record.dynamodb.OldImage) {
                 continue;
             }
-            const model = {
-                type: record.eventName,
-            };
+            const model = { type: record.eventName };
             let typeNew;
             let typeOld;
             // Unmarshall and transform the New Image if it exists
             if (record.dynamodb.NewImage) {
-                const jsonNew = unmarshallStreamImage(record.dynamodb.NewImage, params);
+                const jsonNew = this.unmarshallStreamImage(record.dynamodb.NewImage, params);
                 typeNew = jsonNew[this.typeField];
                 // If type not found then don't do anything
                 if (typeNew && tableModels.includes(typeNew)) {
@@ -1065,7 +1065,7 @@ export class Table {
             }
             // Unmarshall and transform the Old Image if it exists
             if (record.dynamodb.OldImage) {
-                const jsonOld = unmarshallStreamImage(record.dynamodb.OldImage, params);
+                const jsonOld = this.unmarshallStreamImage(record.dynamodb.OldImage, params);
                 typeOld = jsonOld[this.typeField];
                 // If type not found then don't do anything
                 if (typeOld && tableModels.includes(typeOld)) {

@@ -3,6 +3,7 @@
 
     A model represents a DynamoDB single-table entity.
 */
+import { Buffer } from 'buffer';
 import { Expression } from './Expression.js';
 import { OneTableError, OneTableArgError } from './Error.js';
 /*
@@ -80,16 +81,16 @@ export class Model {
         this.indexProperties = this.getIndexProperties(this.indexes);
         let fields = options.fields || this.schema.definition.models[this.name];
         if (fields) {
-            this.prepModel(fields, this.block, true);
+            this.prepModel(fields, this.block);
         }
     }
     /*
         Prepare a model based on the schema and compute the attribute mapping.
      */
-    prepModel(schemaFields, block, top = false) {
+    prepModel(schemaFields, block, parent) {
         let { fields } = block;
         schemaFields = this.table.assign({}, schemaFields);
-        if (top) {
+        if (!parent) {
             //  Top level only
             if (!schemaFields[this.typeField]) {
                 schemaFields[this.typeField] = { type: String, hidden: true };
@@ -113,6 +114,10 @@ export class Model {
             if (!field.type) {
                 field.type = 'string';
                 this.table.log.error(`Missing type field for ${field.name}`, { field });
+            }
+            //  Propagate parent schema partial overrides
+            if (parent && field.partial === undefined && parent.partial !== undefined) {
+                field.partial = parent.partial;
             }
             field.name = name;
             fields[name] = field;
@@ -156,7 +161,7 @@ export class Model {
                 Handle index requirements
             */
             let index = this.indexProperties[field.attribute[0]];
-            if (index && top) {
+            if (index && !parent) {
                 field.isIndexed = true;
                 if (field.attribute.length > 1) {
                     throw new OneTableArgError(`Cannot map property "${field.name}" to a compound attribute"`);
@@ -188,7 +193,7 @@ export class Model {
             if (field.schema) {
                 if (field.type == 'object' || field.type == 'array') {
                     field.block = { deps: [], fields: {} };
-                    this.prepModel(field.schema, field.block);
+                    this.prepModel(field.schema, field.block, field);
                     //  FUTURE - better to apply this to the field block
                     this.nested = true;
                 }
@@ -244,6 +249,8 @@ export class Model {
     getPropValue(properties, path) {
         let v = properties;
         for (let part of path.split('.')) {
+            if (v == null)
+                return v;
             v = v[part];
         }
         return v;
@@ -330,13 +337,6 @@ export class Model {
             }
             if (result.Items) {
                 items = items.concat(result.Items);
-                if (stats) {
-                    stats.count += result.Count;
-                    stats.scanned += result.ScannedCount;
-                    if (result.ConsumedCapacity) {
-                        stats.capacity += result.ConsumedCapacity.CapacityUnits;
-                    }
-                }
             }
             else if (result.Item) {
                 items = [result.Item];
@@ -348,6 +348,17 @@ export class Model {
             }
             else if (params.count || params.select == 'COUNT') {
                 count += result.Count;
+            }
+            if (stats) {
+                if (result.Count) {
+                    stats.count += result.Count;
+                }
+                if (result.ScannedCount) {
+                    stats.scanned += result.ScannedCount;
+                }
+                if (result.ConsumedCapacity) {
+                    stats.capacity += result.ConsumedCapacity.CapacityUnits;
+                }
             }
             if (params.progress) {
                 params.progress({ items, pages, stats, params, cmd });
@@ -583,6 +594,12 @@ export class Model {
         ({ properties, params } = this.checkArgs(properties, params, { parse: true, high: true }));
         properties = this.prepareProperties('get', properties, params);
         if (params.fallback) {
+            if (params.batch) {
+                throw new OneTableError('Need complete keys for batched get operation', {
+                    properties,
+                    code: 'NonUniqueError',
+                });
+            }
             //  Fallback via find when using non-primary indexes
             params.limit = 2;
             let items = await this.find(properties, params);
@@ -879,7 +896,7 @@ export class Model {
                 properties[key] = null;
             }
         }
-        this.runTemplates('put', this.indexes.primary, this.block.deps, properties, params);
+        this.runTemplates('put', '', this.indexes.primary, this.block.deps, properties, params);
         return properties;
     }
     /* private */
@@ -1029,13 +1046,13 @@ export class Model {
                 if (field.items && Array.isArray(value)) {
                     rec[name] = [];
                     let i = 0;
-                    for (let rvalue of raw[name]) {
+                    for (let rvalue of raw[att]) {
                         rec[name][i] = this.transformReadBlock(op, rvalue, properties[name] || [], params, field.block.fields);
                         i++;
                     }
                 }
                 else {
-                    rec[name] = this.transformReadBlock(op, raw[name], properties[name] || {}, params, field.block.fields);
+                    rec[name] = this.transformReadBlock(op, raw[att], properties[name] || {}, params, field.block.fields);
                 }
             }
             else {
@@ -1139,7 +1156,7 @@ export class Model {
             }
             else {
                 //  TODO support > >= < <= ..., AND or ...
-                where = `\${${name}} = {${value}}`;
+                where = `\${${name}} = "{${value}}"`;
             }
         }
         else {
@@ -1154,6 +1171,7 @@ export class Model {
                     continue;
                 }
                 name = field.map ? field.map : name;
+                //  Does not seem to work with a numeric filter
                 let term = `(contains(\${${name}}, {${filter}}))`;
                 where.push(term);
             }
@@ -1472,6 +1490,14 @@ export class Model {
                     //  Validation will catch this
                     continue;
                 }
+                delete properties[name];
+                if (this.getPartial(field, params) === false && pathname.match(/[[.]/)) {
+                    /*
+                        Partial disabled for a nested object
+                        Don't create remove entry as the entire object is being created/updated
+                     */
+                    continue;
+                }
                 if (params.remove && !Array.isArray(params.remove)) {
                     params.remove = [params.remove];
                 }
@@ -1480,7 +1506,6 @@ export class Model {
                 }
                 let path = pathname ? `${pathname}.${field.name}` : field.name;
                 params.remove.push(path);
-                delete properties[name];
             }
             else if (typeof value == 'object' && (field.type == 'object' || field.type == 'array')) {
                 //  Remove nested empty strings because DynamoDB cannot handle these nested in objects or arrays
@@ -1607,8 +1632,11 @@ export class Model {
             }
         }
         if (Object.keys(validation).length > 0) {
-            let error = new OneTableError(`Validation Error in "${this.name}" for "${Object.keys(validation).join(', ')}"`, { validation, code: 'ValidationError' });
-            throw error;
+            throw new OneTableError(`Validation Error in "${this.name}" for "${Object.keys(validation).join(', ')}"`, {
+                validation,
+                code: 'ValidationError',
+                properties,
+            });
         }
     }
     validateProperty(field, value, details, params) {

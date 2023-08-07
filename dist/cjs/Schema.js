@@ -2,15 +2,6 @@
 /*
     Schema.js - Utility class to manage schemas
  */
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Schema = void 0;
 const Model_js_1 = require("./Model.js");
@@ -26,7 +17,7 @@ class Schema {
     constructor(table, schema) {
         this.table = table;
         this.keyTypes = {};
-        this.sync = {};
+        this.process = {};
         table.schema = this;
         Object.defineProperty(this, 'table', { enumerable: false });
         this.params = table.getSchemaParams();
@@ -36,7 +27,7 @@ class Schema {
         if (this.definition) {
             let schema = this.table.assign({}, this.definition, { params: this.params });
             schema = this.transformSchemaForWrite(schema);
-            schema.sync = Object.assign({}, this.sync);
+            schema.process = Object.assign({}, this.process);
             return schema;
         }
         return null;
@@ -61,23 +52,21 @@ class Schema {
                 this.models[name] = new Model_js_1.Model(this.table, name, { fields: model });
             }
             this.createStandardModels();
-            this.sync = schema.sync;
+            this.process = schema.process;
         }
         return this.indexes;
     }
     /*
         Set the schema to use. If undefined, get the table keys.
     */
-    setSchema(schema) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (schema) {
-                this.setSchemaInner(schema);
-            }
-            else {
-                yield this.getKeys();
-            }
-            return this.indexes;
-        });
+    async setSchema(schema) {
+        if (schema) {
+            this.setSchemaInner(schema);
+        }
+        else {
+            await this.getKeys();
+        }
+        return this.indexes;
     }
     //  Start of a function to better validate schemas. More to do.
     validateSchema(schema) {
@@ -133,9 +122,7 @@ class Schema {
         let { indexes, table } = this;
         let primary = indexes.primary;
         let type = this.keyTypes[primary.hash] || 'string';
-        let fields = {
-            [primary.hash]: { type },
-        };
+        let fields = { [primary.hash]: { type } };
         if (primary.sort) {
             let type = this.keyTypes[primary.sort] || 'string';
             fields[primary.sort] = { type };
@@ -168,7 +155,7 @@ class Schema {
             models: { type: 'object', required: true },
             params: { type: 'object', required: true },
             queries: { type: 'object', required: true },
-            sync: { type: 'object' },
+            process: { type: 'object' },
             version: { type: 'string', required: true },
         });
         if (primary.sort) {
@@ -200,14 +187,20 @@ class Schema {
     /*
         Thows exception if model cannot be found
      */
-    getModel(name) {
+    getModel(name, options = { nothrow: false }) {
         if (!name) {
+            if (options.nothrow) {
+                return null;
+            }
             throw new Error('Undefined model name');
         }
         let model = this.models[name.toString()];
         if (!model) {
             if (name == UniqueModel) {
                 return this.uniqueModel;
+            }
+            if (options.nothrow) {
+                return null;
             }
             throw new Error(`Cannot find model ${name}`);
         }
@@ -220,34 +213,32 @@ class Schema {
         }
         delete this.models[name.toString()];
     }
-    getKeys(refresh = false) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (this.indexes && !refresh) {
-                return this.indexes;
-            }
-            let info = yield this.table.describeTable();
-            for (let def of info.Table.AttributeDefinitions) {
-                this.keyTypes[def.AttributeName] = def.AttributeType == 'N' ? 'number' : 'string';
-            }
-            let indexes = { primary: {} };
-            for (let key of info.Table.KeySchema) {
-                let type = key.KeyType.toLowerCase() == 'hash' ? 'hash' : 'sort';
-                indexes.primary[type] = key.AttributeName;
-            }
-            if (info.Table.GlobalSecondaryIndexes) {
-                for (let index of info.Table.GlobalSecondaryIndexes) {
-                    let keys = (indexes[index.IndexName] = {});
-                    for (let key of index.KeySchema) {
-                        let type = key.KeyType.toLowerCase() == 'hash' ? 'hash' : 'sort';
-                        keys[type] = key.AttributeName;
-                    }
-                    indexes[index.IndexName] = keys;
+    async getKeys(refresh = false) {
+        if (this.indexes && !refresh) {
+            return this.indexes;
+        }
+        let info = await this.table.describeTable();
+        for (let def of info.Table.AttributeDefinitions) {
+            this.keyTypes[def.AttributeName] = def.AttributeType == 'N' ? 'number' : 'string';
+        }
+        let indexes = { primary: {} };
+        for (let key of info.Table.KeySchema) {
+            let type = key.KeyType.toLowerCase() == 'hash' ? 'hash' : 'sort';
+            indexes.primary[type] = key.AttributeName;
+        }
+        if (info.Table.GlobalSecondaryIndexes) {
+            for (let index of info.Table.GlobalSecondaryIndexes) {
+                let keys = (indexes[index.IndexName] = {});
+                for (let key of index.KeySchema) {
+                    let type = key.KeyType.toLowerCase() == 'hash' ? 'hash' : 'sort';
+                    keys[type] = key.AttributeName;
                 }
+                indexes[index.IndexName] = keys;
             }
-            this.indexes = indexes;
-            this.createStandardModels();
-            return indexes;
-        });
+        }
+        this.indexes = indexes;
+        this.createStandardModels();
+        return indexes;
     }
     setDefaultParams(params) {
         if (params.typeField == null) {
@@ -335,82 +326,74 @@ class Schema {
     /*
         Read the current schema saved in the table
     */
-    readSchema() {
-        return __awaiter(this, void 0, void 0, function* () {
-            let indexes = this.indexes || (yield this.getKeys());
-            let primary = indexes.primary;
-            let params = {
-                [primary.hash]: SchemaKey,
-            };
-            if (primary.sort) {
-                params[primary.sort] = `${SchemaKey}:Current`;
-            }
-            let schema = yield this.table.getItem(params, { hidden: true, parse: true });
-            return this.transformSchemaAfterRead(schema);
-        });
+    async readSchema() {
+        let indexes = this.indexes || (await this.getKeys());
+        let primary = indexes.primary;
+        let params = {
+            [primary.hash]: SchemaKey,
+        };
+        if (primary.sort) {
+            params[primary.sort] = `${SchemaKey}:Current`;
+        }
+        let schema = await this.table.getItem(params, { hidden: true, parse: true });
+        return this.transformSchemaAfterRead(schema);
     }
-    readSchemas() {
-        return __awaiter(this, void 0, void 0, function* () {
-            let indexes = this.indexes || (yield this.getKeys());
-            let primary = indexes.primary;
-            let params = {
-                [primary.hash]: `${SchemaKey}`,
-            };
-            let schemas = yield this.table.queryItems(params, { hidden: true, parse: true });
-            for (let [index, schema] of Object.entries(schemas)) {
-                schemas[index] = this.transformSchemaAfterRead(schema);
-            }
-            return schemas;
-        });
+    async readSchemas() {
+        let indexes = this.indexes || (await this.getKeys());
+        let primary = indexes.primary;
+        let params = {
+            [primary.hash]: `${SchemaKey}`,
+        };
+        let schemas = await this.table.queryItems(params, { hidden: true, parse: true });
+        for (let [index, schema] of Object.entries(schemas)) {
+            schemas[index] = this.transformSchemaAfterRead(schema);
+        }
+        return schemas;
     }
-    removeSchema(schema) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (!this.indexes) {
-                yield this.getKeys();
-            }
-            let model = this.getModel(SchemaModel);
-            yield model.remove(schema);
-        });
+    async removeSchema(schema) {
+        if (!this.indexes) {
+            await this.getKeys();
+        }
+        let model = this.getModel(SchemaModel);
+        await model.remove(schema);
     }
     /*
         Update the schema model saved in the database _Schema model.
         NOTE: this does not update the current schema used by the Table instance.
     */
-    saveSchema(schema) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (!this.indexes) {
-                yield this.getKeys();
+    async saveSchema(schema) {
+        if (!this.indexes) {
+            await this.getKeys();
+        }
+        if (schema) {
+            schema = this.table.assign({}, schema);
+            if (!schema.params) {
+                schema.params = this.params;
             }
-            if (schema) {
-                schema = this.table.assign({}, schema);
-                if (!schema.params) {
-                    schema.params = this.params;
-                }
-                if (!schema.models) {
-                    schema.models = {};
-                }
-                if (!schema.indexes) {
-                    schema.indexes = this.indexes || (yield this.getKeys());
-                }
-                if (!schema.queries) {
-                    schema.queries = {};
-                }
-                schema = this.transformSchemaForWrite(schema);
+            if (!schema.models) {
+                schema.models = {};
             }
-            else {
-                schema = this.getCurrentSchema();
+            if (!schema.indexes) {
+                schema.indexes = this.indexes || (await this.getKeys());
             }
-            if (!schema) {
-                throw new Error('No schema to save');
+            if (!schema.queries) {
+                schema.queries = {};
             }
-            if (!schema.name) {
-                schema.name = 'Current';
-            }
-            schema.version = schema.version || '0.0.1';
-            schema.format = SchemaFormat;
-            let model = this.getModel(SchemaModel);
-            return yield model.update(schema, { exists: null });
-        });
+            schema = this.transformSchemaForWrite(schema);
+        }
+        else {
+            schema = this.getCurrentSchema();
+        }
+        if (!schema) {
+            throw new Error('No schema to save');
+        }
+        if (!schema.name) {
+            schema.name = 'Current';
+        }
+        schema.version = schema.version || '0.0.1';
+        schema.format = SchemaFormat;
+        let model = this.getModel(SchemaModel);
+        return await model.create(schema, { exists: null });
     }
 }
 exports.Schema = Schema;

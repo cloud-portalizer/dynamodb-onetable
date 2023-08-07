@@ -36,7 +36,7 @@ export type OneIndex = {
  */
 export type OneField = {
     crypt?: boolean
-    default?: string | number | boolean | object
+    default?: string | number | boolean | object | Array<any>
     encode?: readonly (string | RegExp | number)[]
     enum?: readonly string[]
     filter?: boolean
@@ -79,6 +79,7 @@ export type OneSchema = {
     models: {
         [key: string]: OneModel
     }
+    process?: object
     indexes: {
         [key: string]: OneIndex
     }
@@ -140,6 +141,9 @@ export type Optional<T extends OneModel> = {
 type OptionalOrNull<T extends OneModel> = {
     -readonly [P in keyof T as T[P]['required'] extends true ? never : P]?: EntityField<T[P]> | null
 }
+type OptionalOrUndefined<T extends OneModel> = {
+    -readonly [P in keyof T as T[P]['required'] extends true ? never : P]?: EntityField<T[P]> | undefined
+}
 
 /*
     Select properties with generated values
@@ -183,7 +187,7 @@ type Merge<A extends any, B extends any> = {
     Merge gives better intellisense, but requires Flatten to make <infer X> work.
 */
 type Flatten<T> = {[P in keyof T]: T[P]}
-type Entity<T extends OneModel> = Flatten<Merge<Required<T>, OptionalOrNull<T>>>
+type Entity<T extends OneModel> = Flatten<Merge<Required<T>, OptionalOrUndefined<T>>>
 
 /*
     Entity Parameters are partial Entities.
@@ -269,6 +273,7 @@ export type OneParams = {
     set?: object
     stats?: object
     substitutions?: object
+    timestamps?: boolean
     throw?: boolean
     transform?: (model: AnyModel, op: string, name: string, value: any, properties: OneProperties) => any
     transaction?: object
